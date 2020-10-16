@@ -16,6 +16,7 @@ namespace TBDExchangeEngine
 {
     public partial class ExchangeEngineForm : Form
     {
+        bool registered = false;
         string accno;
         string screenNum = "2000";
         List<string> codelist = new List<string>();
@@ -77,7 +78,7 @@ namespace TBDExchangeEngine
             }
 
             MessageBox.Show($"total count of codelist: {codelist.Count()}");
-            StreamWriter sw = new StreamWriter("C:\\Users\\hori9\\Desktop\\datatest.txt", append: true);
+            StreamWriter sw = new StreamWriter("C:\\Users\\admin\\Desktop\\datatest.txt", append: true);
             sw.WriteLine($"total count of codelist: {codelist.Count()}");
             sw.Flush();
             sw.Close();
@@ -118,6 +119,7 @@ namespace TBDExchangeEngine
             }
 
             MessageBox.Show("registered all stocks");
+            registered = true;
         }
 
         public void onEventConnect(object sender, AxKHOpenAPILib._DKHOpenAPIEvents_OnEventConnectEvent e)
@@ -159,7 +161,7 @@ namespace TBDExchangeEngine
 
                 MessageBox.Show($"{totalPurchase.ToString()}, {totalEstimate.ToString()}, {totalProfitLoss.ToString()}");
 
-                StreamWriter sw = new StreamWriter("C:\\Users\\hori9\\Desktop\\datatest.txt", append: true);
+                StreamWriter sw = new StreamWriter("C:\\Users\\admin\\Desktop\\datatest.txt", append: true);
                 sw.WriteLine($"{totalPurchase.ToString()}, {totalEstimate.ToString()}, {totalProfitLoss.ToString()}");
                 sw.Flush();
                 sw.Close();
@@ -168,19 +170,22 @@ namespace TBDExchangeEngine
 
         public void onReceiveRealData(object sender, AxKHOpenAPILib._DKHOpenAPIEvents_OnReceiveRealDataEvent e)
         {
-            if (e.sRealType == "장시작시간")
+            if (registered)
             {
-                GetMarketState(e);
-            }
+                if (e.sRealType == "장시작시간")
+                {
+                    GetMarketState(e);
+                }
 
-            if (e.sRealType == "주식호가잔량")
-            {
-                GetHoga(e);
-            }
+                if (e.sRealType == "주식호가잔량")
+                {
+                    GetHoga(e);
+                }
 
-            if (e.sRealType == "주식체결")
-            {
-                GetTick(e);
+                if (e.sRealType == "주식체결")
+                {
+                    GetTick(e);
+                }
             }
         }
 
@@ -214,7 +219,8 @@ namespace TBDExchangeEngine
 
         public void GetHoga(AxKHOpenAPILib._DKHOpenAPIEvents_OnReceiveRealDataEvent e)
         {
-            string hogaDataString = "hoga;";
+            string code = e.sRealKey;
+            string hogaDataString = $"hoga;{code};";
 
             string hogaTime = axKHOpenAPI1.GetCommRealData(e.sRealType, 21);
             hogaDataString += hogaTime + ";";
@@ -237,7 +243,7 @@ namespace TBDExchangeEngine
             string sellTotal = axKHOpenAPI1.GetCommRealData(e.sRealType, 138);
             hogaDataString += $"{buyTotal};{sellTotal};";
 
-            StreamWriter sw = new StreamWriter("C:\\Users\\hori9\\Desktop\\hogatest.txt", append: true);
+            StreamWriter sw = new StreamWriter("C:\\Users\\admin\\Desktop\\hogatest.txt", append: true);
             sw.WriteLine(hogaDataString);
             sw.Flush();
             sw.Close();
@@ -255,7 +261,8 @@ namespace TBDExchangeEngine
              * 거래회전율: 31
              * 거래비용: 32
              */
-            string tickDataString = "tick;";
+            string code = e.sRealKey;
+            string tickDataString = $"tick;{code};";
 
             string tradedTime = axKHOpenAPI1.GetCommRealData(e.sRealType, 20);
             string tradedPrice = axKHOpenAPI1.GetCommRealData(e.sRealType, 10);
@@ -267,7 +274,7 @@ namespace TBDExchangeEngine
             string cost = axKHOpenAPI1.GetCommRealData(e.sRealType, 31);
             tickDataString += $"{tradedTime};{tradedPrice};{sellHoga};{buyHoga};{tradedVolume};{totalVolume};{tradingRate};{cost};";
 
-            StreamWriter sw = new StreamWriter("C:\\Users\\hori9\\Desktop\\ticktest.txt", append: true);
+            StreamWriter sw = new StreamWriter("C:\\Users\\admin\\Desktop\\ticktest.txt", append: true);
             sw.WriteLine(tickDataString);
             sw.Flush();
             sw.Close();
