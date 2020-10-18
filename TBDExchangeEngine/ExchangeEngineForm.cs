@@ -8,14 +8,17 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Confluent.Kafka;
 
 namespace TBDExchangeEngine
 {
     public partial class ExchangeEngineForm : Form
     {
+        IProducer<string, string> Kafka;
         bool registered = false;
         string accno;
         string screenNum = "2000";
@@ -24,12 +27,24 @@ namespace TBDExchangeEngine
         public ExchangeEngineForm()
         {
             InitializeRabbitMQ();
+            InitializeKafka();
             InitializeComponent();
 
             axKHOpenAPI1.CommConnect();
             axKHOpenAPI1.OnEventConnect += onEventConnect;
             axKHOpenAPI1.OnReceiveTrData += onReceiveTrData;
             axKHOpenAPI1.OnReceiveRealData += onReceiveRealData;
+        }
+
+        private void InitializeKafka()
+        {
+            var config = new ProducerConfig
+            {
+                BootstrapServers = "localhost:9092",
+                ClientId = Dns.GetHostName(),
+            };
+
+            Kafka = new ProducerBuilder<string, string>(config).Build();
         }
 
         private void InitializeRabbitMQ()
