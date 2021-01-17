@@ -18,9 +18,12 @@ namespace TBDExchangeEngine
 {
     public partial class ExchangeEngineForm : Form
     {
-        IProducer<string, string> Kafka;
+        IProducer<Null, string> Kafka;
+        IModel Rabbit;
+
         bool registered = false;
         string accno;
+        string serverType;
         string screenNum = "2000";
         List<string> codelist = new List<string>();
 
@@ -36,6 +39,33 @@ namespace TBDExchangeEngine
             axKHOpenAPI1.OnReceiveRealData += onReceiveRealData;
         }
 
+        private void InitializeRabbitMQ()
+        {
+            /*
+             * Docker로 RabbitMQ 인스턴스 실행하고 시작하기:
+             * 
+             * docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672
+             * --restart=unless-stopped -e RABBITMQ_DEFAULT_USER . -e RABBITMQ_DEFAULT_PASS .
+             * rabbitmq:managment
+             * 
+             * RabbitMQ를 통해서 execution 오더를 받아오기
+             */
+            var factory = new ConnectionFactory() {
+                HostName = "localhost",
+                UserName = "simpli",
+                Password = "simsimpli123data123"
+            };
+            var connection = factory.CreateConnection();
+
+            // RabbitMQ Producer 생성
+            Rabbit = connection.CreateModel();
+            Rabbit.QueueDeclare(queue: "kiwoom-data",
+                                 durable: false,
+                                 exclusive: false,
+                                 autoDelete: false,
+                                 arguments: null);
+        }
+
         private void InitializeKafka()
         {
             var config = new ProducerConfig
@@ -44,34 +74,18 @@ namespace TBDExchangeEngine
                 ClientId = Dns.GetHostName(),
             };
 
-            Kafka = new ProducerBuilder<string, string>(config).Build();
+            // Kafka Producer 생성
+            Kafka = new ProducerBuilder<Null, string>(config).Build();
         }
 
-        private void InitializeRabbitMQ()
+        private void KafkaErrorHandler(DeliveryReport<Null, string> res)
         {
-            var factory = new ConnectionFactory() { HostName = "localhost" };
-            var connection = factory.CreateConnection();
-            var channel = connection.CreateModel();
-            channel.QueueDeclare(queue: "order",
-                                 durable: false,
-                                 exclusive: false,
-                                 autoDelete: false,
-                                 arguments: null);
-
-            var consumer = new EventingBasicConsumer(channel);
-            consumer.Received += (model, ea) =>
-            {
-                var body = ea.Body.ToArray();
-                var message = Encoding.UTF8.GetString(body);
-                MessageBox.Show($" [x] Received {message}");
-            };
-            channel.BasicConsume(queue: "order",
-                                 autoAck: true,
-                                 consumer: consumer);
+            // pass: 우선은 오류가 나면 할 수 있는게 없기 때문
         }
 
         public void GetPortfolioInfo()
         {
+            // 계좌번호를 받아온 다음 요청보내기
             axKHOpenAPI1.SetInputValue("계좌번호", accno);
             axKHOpenAPI1.SetInputValue("비밀번호", "pruna1");
             axKHOpenAPI1.SetInputValue("비밀번호입력매체구분", "00");
@@ -91,12 +105,70 @@ namespace TBDExchangeEngine
                 string[] stockCode = stockCodeList.Split(';');
                 codelist.AddRange(stockCode);
             }
+        }
 
-            MessageBox.Show($"total count of codelist: {codelist.Count()}");
-            StreamWriter sw = new StreamWriter("C:\\Users\\admin\\Desktop\\datatest.txt", append: true);
-            sw.WriteLine($"total count of codelist: {codelist.Count()}");
-            sw.Flush();
-            sw.Close();
+        public void GetFuturesCodeList()
+        {
+            foreach (bool index in new List<bool> { true, false }) {
+                string futuresCodeListStr;
+                string[] futuresCode;
+
+                if (!index)
+                {
+                    // 주식 선물
+                    futuresCodeListStr = axKHOpenAPI1.GetSFutureList("");
+                    futuresCode = futuresCodeListStr.Split('|');
+                }
+                else
+                {
+                    // 지수 선물
+                    futuresCodeListStr = axKHOpenAPI1.GetFutureList();
+                    futuresCode = futuresCodeListStr.Split(';');
+                }
+
+                List<string> cleanFuturesCode = new List<string>();
+                foreach (string code in futuresCode)
+                {
+                    if (code.Length > 0)
+                    {
+                        string fCode = code.Split('^')[0];
+                        cleanFuturesCode.Add(fCode);
+                    }
+                }
+
+                List<string> fuCodeSlice = new List<string>();
+                foreach (string code in cleanFuturesCode)
+                {
+                    string fCodeSlice = code.Substring(1, 2);
+                    fuCodeSlice.Add(fCodeSlice);
+                }
+                fuCodeSlice = fuCodeSlice.Select(x => x).Distinct().ToList();
+
+                List<List<string>> totalFuCode = new List<List<string>>();
+                foreach (string codeSlice in fuCodeSlice)
+                {
+                    List<string> tmp = new List<string>();
+                    foreach (string code in cleanFuturesCode)
+                    {
+                        if (codeSlice == code.Substring(1, 2))
+                        {
+                            tmp.Add(code);
+                        }
+                    }
+                    totalFuCode.Add(tmp.GetRange(0, 3));
+                }
+
+                List<string> flattenFuCode = new List<string>();
+                foreach (var list in totalFuCode)
+                {
+                    foreach (string code in list)
+                    {
+                        flattenFuCode.Add(code);
+                    }
+                }
+
+                codelist.AddRange(flattenFuCode);
+            }
         }
 
         public void RegisterRealTimeData()
@@ -106,7 +178,6 @@ namespace TBDExchangeEngine
 
             int cnt = 0;
             int stockScreenNumber = 3000;
-            int firstStock = 0;
 
             try
             {
@@ -116,24 +187,25 @@ namespace TBDExchangeEngine
                     axKHOpenAPI1.SetRealReg(stockScreenNumber.ToString(),
                                             code,
                                             "20;41", // 체결시간
-                                            firstStock.ToString());
+                                            "1");
 
                     cnt += 1;
-                    firstStock = 1;
+                    logTextBox.AppendText($"{cnt.ToString()} 실시간 등록: {code}. Screen Num: {stockScreenNumber.ToString()}\n");
 
                     if (cnt % 50 == 0)
                     {
                         stockScreenNumber += 1;
-                        firstStock = 0;
                     }
                 }
+
+                // 등록 완료 후 label 업데이트해주기
+                realtimeReadyLabel.Text = $"실시간 등록 완료 {cnt.ToString()}개 종목";
             }
             catch
             {
                 RegisterRealTimeData();
             }
 
-            MessageBox.Show("registered all stocks");
             registered = true;
         }
 
@@ -155,12 +227,24 @@ namespace TBDExchangeEngine
                 string userName = axKHOpenAPI1.GetLoginInfo("USER_NAME");
                 string connectedServer = axKHOpenAPI1.GetLoginInfo("GetServerGubun");
 
-                userIdLabel.Text = userID;
-                userNameLabel.Text = userName;
-                serverTypeLabel.Text = connectedServer.ToString();
+                if (connectedServer == "1")
+                {
+                    serverType = "모의";
+                }
+                else
+                {
+                    serverType = "실서버";
+                }
+
+                userIdLabel.Text = $"접속 유저: {userID}";
+                userNameLabel.Text = $"접속자 이름: {userName}";
+                serverTypeLabel.Text = $"서버 종류: {serverType}";
+                accountLabel.Text = $"계좌번호: {accno}";
+
 
                 GetPortfolioInfo();
                 GetCodeList();
+                GetFuturesCodeList();
                 RegisterRealTimeData();
             }
         }
@@ -173,13 +257,22 @@ namespace TBDExchangeEngine
                 long totalEstimate = long.Parse(axKHOpenAPI1.GetCommData(e.sTrCode, e.sRQName, 0, "총평가금액"));
                 long totalProfitLoss = long.Parse(axKHOpenAPI1.GetCommData(e.sTrCode, e.sRQName, 0, "총평가손익금액"));
                 double totalProfitRate = double.Parse(axKHOpenAPI1.GetCommData(e.sTrCode, e.sRQName, 0, "총수익률(%)"));
-
-                MessageBox.Show($"{totalPurchase.ToString()}, {totalEstimate.ToString()}, {totalProfitLoss.ToString()}");
-
-                StreamWriter sw = new StreamWriter("C:\\Users\\admin\\Desktop\\datatest.txt", append: true);
-                sw.WriteLine($"{totalPurchase.ToString()}, {totalEstimate.ToString()}, {totalProfitLoss.ToString()}");
-                sw.Flush();
-                sw.Close();
+            }
+            else if (e.sRQName == "예수금상세현황요청")
+            {
+                // pass
+            }
+            else if (e.sRQName == "실시간미체결요청")
+            {
+                // pass
+            }
+            else if (e.sRQName == "주식분봉차트조회")
+            {
+                // pass
+            }
+            else if (e.sRQName == "업종일봉차트조회")
+            {
+                // pass
             }
         }
 
@@ -192,12 +285,12 @@ namespace TBDExchangeEngine
                     GetMarketState(e);
                 }
 
-                if (e.sRealType == "주식호가잔량")
+                if ((e.sRealType == "주식호가잔량") || (e.sRealType == "주식선물호가잔량") || (e.sRealType == "선물호가잔량"))
                 {
                     GetHoga(e);
                 }
 
-                if (e.sRealType == "주식체결")
+                if ((e.sRealType == "주식체결") || (e.sRealType == "선물시세"))
                 {
                     GetTick(e);
                 }
@@ -235,10 +328,9 @@ namespace TBDExchangeEngine
         public void GetHoga(AxKHOpenAPILib._DKHOpenAPIEvents_OnReceiveRealDataEvent e)
         {
             string code = e.sRealKey;
-            string hogaDataString = $"hoga;{code};";
-
-            string hogaTime = axKHOpenAPI1.GetCommRealData(e.sRealType, 21);
-            hogaDataString += hogaTime + ";";
+            string hogaDate = axKHOpenAPI1.GetCommRealData(e.sRealType, 21);
+            string timestamp = DateTime.Now.ToString("yyyyMMddHHmmss.fff");
+            string hogaDataString = $"hoga;{code};{hogaDate};{timestamp}";
 
             for (int i = 0; i < 10; i++)
             {
@@ -254,14 +346,23 @@ namespace TBDExchangeEngine
                 hogaDataString += $"{buyHoga};{buyAmt};";
             }
 
-            string buyTotal = axKHOpenAPI1.GetCommRealData(e.sRealType, 128);
-            string sellTotal = axKHOpenAPI1.GetCommRealData(e.sRealType, 138);
-            hogaDataString += $"{buyTotal};{sellTotal};";
+            string totalBuyHogaAmt = axKHOpenAPI1.GetCommRealData(e.sRealType, 125); // 매수호가총잔량
+            string totalSellHogaAmt = axKHOpenAPI1.GetCommRealData(e.sRealType, 121); // 매도호가총잔량
+            string netBuyHogaAmt = axKHOpenAPI1.GetCommRealData(e.sRealType, 128); // 순매수잔량
+            string netSellHogaAmt = axKHOpenAPI1.GetCommRealData(e.sRealType, 138); //순매도잔량
+            string ratioBuyHogaAmt = axKHOpenAPI1.GetCommRealData(e.sRealType, 129); // 매수비율
+            string ratioSellHogaAmt = axKHOpenAPI1.GetCommRealData(e.sRealType, 139); // 매도비율
+            string agentTicker = axKHOpenAPI1.GetCommRealData(e.sRealType, 216); // 투자자별 ticker (제공해주면)
 
-            StreamWriter sw = new StreamWriter("C:\\Users\\admin\\Desktop\\hogatest.txt", append: true);
-            sw.WriteLine(hogaDataString);
-            sw.Flush();
-            sw.Close();
+            hogaDataString += $"{totalBuyHogaAmt};{totalSellHogaAmt};{netBuyHogaAmt};{netSellHogaAmt};{ratioBuyHogaAmt};{ratioSellHogaAmt};{agentTicker};";
+
+            //StreamWriter sw = new StreamWriter("C:\\Users\\simpl\\OneDrive\\바탕 화면\\Projects\\tests\\files\\hogatest.txt", append: true);
+            //sw.WriteLine(hogaDataString);
+            //sw.Flush();
+            //sw.Close();
+
+            Kafka.Produce("kiwoom-data", new Message<Null, string> { Value = hogaDataString }, KafkaErrorHandler);
+            Rabbit.BasicPublish(exchange: "", routingKey: "kiwoom-data", basicProperties: null, body: Encoding.UTF8.GetBytes(hogaDataString));
         }
 
         public void GetTick(AxKHOpenAPILib._DKHOpenAPIEvents_OnReceiveRealDataEvent e)
@@ -273,26 +374,39 @@ namespace TBDExchangeEngine
              * (최우선) 매수호가: 28
              * 거래량: 15
              * 누적거래량: 13
+             * 고가: 17
+             * 시가: 16
+             * 저가: 18
              * 거래회전율: 31
              * 거래비용: 32
              */
             string code = e.sRealKey;
-            string tickDataString = $"tick;{code};";
+            string tradeDate = axKHOpenAPI1.GetCommRealData(e.sRealType, 20);
+            string timestamp = DateTime.Now.ToString("yyyyMMddHHmmss.fff");
+            string currentPrice = axKHOpenAPI1.GetCommRealData(e.sRealType, 10);
+            string openPrice = axKHOpenAPI1.GetCommRealData(e.sRealType, 16);
+            string high = axKHOpenAPI1.GetCommRealData(e.sRealType, 17);
+            string low = axKHOpenAPI1.GetCommRealData(e.sRealType, 18);
+            string volume = axKHOpenAPI1.GetCommRealData(e.sRealType, 15);
+            string cumVolume = axKHOpenAPI1.GetCommRealData(e.sRealType, 13);
+            string tradeSellHoga1 = axKHOpenAPI1.GetCommRealData(e.sRealType, 27);
+            string tradeBuyHoga1 = axKHOpenAPI1.GetCommRealData(e.sRealType, 28);
 
-            string tradedTime = axKHOpenAPI1.GetCommRealData(e.sRealType, 20);
-            string tradedPrice = axKHOpenAPI1.GetCommRealData(e.sRealType, 10);
-            string sellHoga = axKHOpenAPI1.GetCommRealData(e.sRealType, 27);
-            string buyHoga = axKHOpenAPI1.GetCommRealData(e.sRealType, 28);
-            string tradedVolume = axKHOpenAPI1.GetCommRealData(e.sRealType, 15);
-            string totalVolume = axKHOpenAPI1.GetCommRealData(e.sRealType, 13);
-            string tradingRate = axKHOpenAPI1.GetCommRealData(e.sRealType, 31);
-            string cost = axKHOpenAPI1.GetCommRealData(e.sRealType, 31);
-            tickDataString += $"{tradedTime};{tradedPrice};{sellHoga};{buyHoga};{tradedVolume};{totalVolume};{tradingRate};{cost};";
+            string tickDataString = $"tick;{code};{tradeDate};{timestamp};";
+            tickDataString += $"{currentPrice};{openPrice};{high};{low};{volume};{cumVolume};{tradeSellHoga1};{tradeBuyHoga1};";
 
-            StreamWriter sw = new StreamWriter("C:\\Users\\admin\\Desktop\\ticktest.txt", append: true);
-            sw.WriteLine(tickDataString);
-            sw.Flush();
-            sw.Close();
+            //StreamWriter sw = new StreamWriter("C:\\Users\\simpl\\OneDrive\\바탕 화면\\Projects\\tests\\files\\ticktest.txt", append: true);
+            //sw.WriteLine(tickDataString);
+            //sw.Flush();
+            //sw.Close();
+
+            Kafka.Produce("kiwoom-data", new Message<Null, string> { Value = tickDataString }, KafkaErrorHandler);
+            Rabbit.BasicPublish(exchange: "", routingKey: "kiwoom-data", basicProperties: null, body: Encoding.UTF8.GetBytes(tickDataString));
+        }
+
+        private void ExchangeEngineForm_Load(object sender, EventArgs e)
+        {
+
         }
     }
 }
